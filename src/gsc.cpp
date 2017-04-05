@@ -31,6 +31,12 @@ namespace po = boost::program_options;
 #include <boost/algorithm/string.hpp>
 #include <boost/lexical_cast.hpp>
 
+#if USE_XDO
+extern "C" {
+#include <xdo.h>
+}
+#endif
+
 using namespace std;
 
 
@@ -239,6 +245,32 @@ vector<string> load_script( string filename )
 
   return lines;
 }
+
+void passthrough_char(int masterfd)
+{
+  char input[2];
+  input[1] = 0; // null byte
+  if( read(0, input, 1) > 0 )
+  {
+    if( (int)input[0] == 10 )
+      input[0] = '\r'; // replace returns with \r
+    write(masterfd, input, 1 ); 
+  }
+}
+// passthrough mode
+void passthrough( int masterfd )
+{
+  char input[2];
+  input[1] = 0; // null byte
+  // read from standard input until EOF (Ctl-D)
+  while( read(0, input, 1) > 0 && input[0] != 4)
+  {
+    if( (int)input[0] == 10 )
+      input[0] = '\r'; // replace returns with \r
+    write(masterfd, input, 1 ); 
+  }
+}
+
 
 int main(int argc, char *argv[])
 {
@@ -577,6 +609,7 @@ int main(int argc, char *argv[])
     int i, j;
 
 
+
     if( vm.count("setup-command") )
     {
     // run setup commands
@@ -604,11 +637,20 @@ int main(int argc, char *argv[])
     if( vm.count("preview") )
       pfs.open(".gsc-preview");
 
-    bool simulate_typing = true;
-    bool interactive     = true;
+    // modes
+    bool simulate_typing_mode = true;
+    bool interactive_mode     = true;
+    bool keysym_mode          = false;
+
     bool line_loaded;
     bool exit = false;
 
+
+#ifdef USE_XDO
+    // setup xdo for sending key press events
+    xdo_t *xdo = xdo_new(NULL);
+    char xdo_buffer[BUFSIZ];
+#endif
 
     for( i = 0; i < lines.size(); i++)
     {
@@ -644,24 +686,53 @@ int main(int argc, char *argv[])
         break;
 
       linep = line.c_str();
-      for( j = 0; j < line.size(); j++)
+      if(keysym_mode)
       {
-        write(masterfd, linep+j, 1);
-        if(sflg && simulate_typing)
-          rand_pause();
-        if( iflg && interactive && strchr(vm["wait-chars"].as<string>().c_str(), linep[j]) != NULL )
-          nc = read(0, input, BUFSIZ);
+#ifdef USE_XDO
+        strcpy(xdo_buffer, linep);
+        char* token = strtok(xdo_buffer, " ");
+        input[1] = 0;
+        while(token)
+        {
+          // send keypress events to current window
+          xdo_send_keysequence_window(xdo, CURRENTWINDOW, token, 0);
+          if(sflg && simulate_typing_mode)
+            rand_pause();
+          // now read the keypress from input
+          passthrough_char(masterfd);
+          token = strtok(NULL, " ");
+        }
+#else
+        throw std::runtime_error("Cannot enter "keysym mode". gsc was not compiled with libxdo.");
+#endif
+      }
+      else
+      {
+        for( j = 0; j < line.size(); j++)
+        {
 
+          write(masterfd, linep+j, 1);
+          if(sflg && simulate_typing_mode)
+            rand_pause();
+          if( iflg && interactive_mode && strchr(vm["wait-chars"].as<string>().c_str(), linep[j]) != NULL )
+            nc = read(0, input, BUFSIZ);
+
+        }
       }
       line_loaded=true;
 
       // after line is loaded...
       #include "handle_interactive_commands.h"
 
-      pause( pause_time );
+      pause( pause_time ); // pause before and after hitting "enter"
       write(masterfd, "\r", 1);
       pause( pause_time );
     }
+
+#ifdef USE_XDO
+    // cleanup key press event sender
+    xdo_free(NULL);
+#endif
 
     // close preview file
     pfs << "DONE" << endl;
@@ -669,7 +740,7 @@ int main(int argc, char *argv[])
 
     // wait for the user before exiting unless the exit command was given
     // or we are in non-interactive mode
-    if(iflg && interactive && !exit)
+    if(iflg && interactive_mode && !exit)
       nc = read(0, input, BUFSIZ);
 
     if( vm.count("cleanup-command") )

@@ -280,7 +280,13 @@ void passthrough( int masterfd )
 
 
 int main(int argc, char *argv[])
-{
+{ 
+  //Prints a simple help message and exits if no parameter was provided
+  if(argc < 2){
+  printf("\nGSC requires at least 1 parameter\nTypical syntax is:\n\n\tgsc [options] <scriptname>\n\nFor more help use:\n\tgsc -h\n\n");
+  exit(1);
+  }
+
   int masterfd, slavefd;  // master and slave file descriptors
   char *slavedevice; // slave filename
   pid_t slavePID, outputPID; // PIDs for calls to fork.
